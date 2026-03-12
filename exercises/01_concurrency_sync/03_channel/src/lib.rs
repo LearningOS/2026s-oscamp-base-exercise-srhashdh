@@ -42,7 +42,25 @@ pub fn multi_producer(n_producers: usize) -> Vec<String> {
     // TODO: Clone a sender for each producer
     // TODO: Remember to drop the original sender, otherwise receiver won't finish
     // TODO: Collect all messages and sort
-    todo!()
+    let (tx, rx) = mpsc::channel();
+    let mut handles = vec![];
+    
+    for i in 0..n_producers {
+        let tx_clone = tx.clone(); 
+        let handle = thread::spawn(move || {
+            let msg = format!("msg from {}", i);
+            tx_clone.send(msg).unwrap();
+        });
+        handles.push(handle);
+    }
+    drop(tx);
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    let mut res: Vec<_> = rx.into_iter().collect();
+    res.sort();
+    res
+
 }
 
 #[cfg(test)]

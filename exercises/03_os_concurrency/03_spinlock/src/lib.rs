@@ -11,7 +11,7 @@
 
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
-
+use core::hint::spin_loop;
 /// Basic spin lock
 pub struct SpinLock<T> {
     locked: AtomicBool,
@@ -41,7 +41,17 @@ impl<T> SpinLock<T> {
     /// Caller must ensure `unlock` is called after using the data.
     pub fn lock(&self) -> &mut T {
         // TODO
-        todo!()
+        loop{
+            match self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed){
+                Err(_) => {
+                    spin_loop();
+                },
+                Ok(_) => unsafe{
+                    let res = &mut *self.data.get();
+                    return res;
+                }
+            }
+        }
     }
 
     /// Release lock.
@@ -49,14 +59,20 @@ impl<T> SpinLock<T> {
     /// TODO: Set locked to false (using Release ordering)
     pub fn unlock(&self) {
         // TODO
-        todo!()
+        self.locked.store(false, Ordering::Release);
     }
 
     /// Try to acquire lock without spinning.
     /// Returns Some(&mut T) on success, None if lock is busy.
     pub fn try_lock(&self) -> Option<&mut T> {
         // TODO: Single compare_exchange attempt
-        todo!()
+        match self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed){
+            Err(_) => None,
+            Ok(_) => unsafe{
+                let res = &mut *self.data.get();
+                Some(res)
+            }
+        }
     }
 }
 

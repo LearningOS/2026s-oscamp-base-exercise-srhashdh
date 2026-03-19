@@ -39,6 +39,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 
+use core::sync::atomic::{AtomicUsize, Ordering};
 /// Free block header, stored at the beginning of each free memory block
 struct FreeBlock {
     size: usize,
@@ -119,7 +120,48 @@ unsafe impl GlobalAlloc for FreeListAllocator {
         // TODO: Step 2 — no suitable block in free_list, allocate from bump region
         //
         // Same logic as 02_bump_allocator's alloc
-        todo!()
+        let mut prev_ptr: *mut FreeBlock = null_mut();
+        let mut curr = self.free_list_head();
+
+        while !curr.is_null(){
+            let curr_addr = curr as usize;
+            if curr_addr % align == 0 && (*curr).size >= size {
+
+                if prev_ptr!= null_mut(){
+                    (*prev_ptr).next = (*curr).next;
+                }else {
+                    self.set_free_list_head((*curr).next);
+                }
+                return curr as *mut u8;
+            }
+            prev_ptr = curr;
+            curr = (*curr).next;
+        }
+        let mut current_next = self.bump_next.load(Ordering::SeqCst);
+        loop{
+            let aligned_next = (current_next + align - 1) & !(align - 1);
+
+            let end = match aligned_next.checked_add(size) {
+                Some(e) => e,
+                None => return null_mut(),
+            };
+
+            if end > self.heap_end {
+                return null_mut();
+            }
+
+            match self.bump_next.compare_exchange_weak(
+                current_next,
+                end,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ){
+                Ok(_) => return aligned_next as *mut u8,
+                Err(updated_next) => {
+                    current_next = updated_next;
+                }
+            }
+        }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -131,7 +173,12 @@ unsafe impl GlobalAlloc for FreeListAllocator {
         // 1. Cast ptr to *mut FreeBlock
         // 2. Write FreeBlock { size, next: current list head }
         // 3. Update free_list head to ptr
-        todo!()
+        
+        let ptr = ptr as *mut FreeBlock;
+        let old_head = self.free_list_head();
+        ptr.write(FreeBlock { size, next: old_head });
+        self.set_free_list_head(ptr);
+        
     }
 }
 

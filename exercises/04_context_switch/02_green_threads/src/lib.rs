@@ -17,6 +17,7 @@
 #![cfg(target_arch = "riscv64")]
 
 use core::arch::naked_asm;
+//use std::os::windows::thread;
 
 /// Per-thread stack size. Slightly larger to avoid overflow under QEMU / test harness.
 const STACK_SIZE: usize = 1024 * 128;
@@ -137,7 +138,20 @@ impl Scheduler {
     ///    `sp` must be 16-byte aligned (e.g. `(stack_top - 16) & !15` to leave headroom).
     /// 3. Push a `GreenThread` with this context, state `Ready`, and `entry` stored for the wrapper to call.
     pub fn spawn(&mut self, entry: extern "C" fn()) {
-        todo!("alloc stack, init ctx with ra=thread_wrapper and aligned sp, push GreenThread(Ready, entry)")
+        let buffer = vec![0u8; STACK_SIZE];
+        let stack_top = buffer.as_ptr() as usize + STACK_SIZE;
+        let aligned_top = (stack_top - 16)& !0xF;
+
+        let mut ctx = TaskContext::default();
+        ctx.ra = thread_wrapper as *const () as u64;
+        ctx.sp = aligned_top as u64;
+
+        self.threads.push(GreenThread {
+            ctx: ctx,
+            state: ThreadState::Ready,
+            _stack: Some(buffer),
+            entry: Some(entry)
+        })
     }
 
     /// Run the scheduler until all threads (except the main one) are `Finished`.
@@ -146,12 +160,51 @@ impl Scheduler {
     /// 2. Loop: if all threads in `threads[1..]` are `Finished`, break; otherwise call `schedule_next()` (which may switch away and later return).
     /// 3. Clear `SCHEDULER` when done.
     pub fn run(&mut self) {
-        todo!("set SCHEDULER to self, loop until threads[1..] all Finished, call schedule_next, then clear SCHEDULER")
+        unsafe {
+            SCHEDULER = self;
+        }
+
+        loop {
+            if self.threads.iter().skip(1).all(|t| t.state == ThreadState::Finished) {
+                break;
+            }
+            self.schedule_next();
+        }
+
+        unsafe {
+            SCHEDULER = core::ptr::null_mut();
+        }
     }
 
     /// Find the next ready thread (starting from `current + 1` round-robin), mark current as `Ready` (if not `Finished`), mark next as `Running`, set `CURRENT_THREAD_ENTRY` if the next thread has an entry, then switch to it.
     fn schedule_next(&mut self) {
-        todo!("round-robin find next Ready, set current Ready (if not Finished), next Running, CURRENT_THREAD_ENTRY, then switch_context")
+        let n = self.threads.len();
+        let mut next = (self.current + 1) % n;
+        while self.threads[next].state != ThreadState::Ready {
+            next = (next + 1) % n;
+            if next == self.current {
+                return;
+            }
+        }
+        if self.threads[self.current].state == ThreadState::Running{
+            self.threads[self.current].state = ThreadState::Ready;
+        }
+        self.threads[next].state = ThreadState::Running;
+        if let Some(entry) = self.threads[next].entry.take() {
+            unsafe {
+                CURRENT_THREAD_ENTRY = Some(entry)
+            };
+        }
+        let old_idx = self.current;
+        self.current = next;
+        unsafe {
+            let old_ptr = &mut self.threads[old_idx].ctx as *mut TaskContext;
+            let next_ptr = &self.threads[next].ctx as *const TaskContext;
+            switch_context(
+                &mut *old_ptr,
+                &*next_ptr
+            );
+        }
     }
 }
 
